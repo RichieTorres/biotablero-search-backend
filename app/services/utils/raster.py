@@ -3,13 +3,18 @@ import io
 
 from PIL import Image
 from rasterstats import zonal_stats
+import rasterio
+from rasterio.windows import from_bounds
+from rasterio.features import rasterize
+from pyproj import Transformer
 from rio_tiler.io.rasterio import Reader
+# from rio_tiler.io import rasterio
 import numpy as np
 import geopandas as gpd
 from typing import Any, Dict, List, Tuple
 import rioxarray
 from shapely import box
-from shapely.geometry import shape
+from shapely.geometry import shape, Polygon
 import xarray
 
 from geojson_pydantic import geometries
@@ -72,6 +77,104 @@ def crop_raster(
         )
 
     return img_base64
+
+
+def get_raster_values2(cog_path: str, polygon: geometries.MultiPolygon, categories: Dict[str, int]
+):
+
+    polygon_geom = shape(polygon)
+    with rasterio.open(cog_path) as src:
+        # Obtener bounds del polígono
+        minx, miny, maxx, maxy = polygon_geom.bounds
+
+        # Crear ventana que cubre solo esa área
+        window = from_bounds(minx, miny, maxx, maxy, src.transform)
+
+        # Leer SOLO esa ventana (no todo el archivo)
+        data = src.read(1, window=window)
+
+        clean_data = np.where(np.isnan(data), 0, data)
+
+        window_transform = src.window_transform(window)
+
+        # Crear máscara del polígono para esta ventana
+        # mask = self._create_polygon_mask(data.shape, polygon_geom, window_transform)
+        mask = rasterize(
+            [polygon_geom],  # Lista de geometrías
+            out_shape=clean_data.shape,  # Forma del array (height, width)
+            transform=window_transform,  # Transformación geoespacial
+            fill=0,  # Valor fuera del polígono
+            default_value=1,  # Valor dentro del polígono
+            dtype=np.uint8
+        )
+
+        # Aplicar máscara y calcular estadísticas
+        masked_data = np.where(mask, clean_data, 0)
+
+        # return self._calculate_coverage_stats(masked_data, window_transform)
+        # pixel_area = abs(window_transform[0] * window_transform[4])  # ancho × alto del pixel
+
+        # # Si estás en grados, convertir a metros aproximadamente
+        # if abs(window_transform[0]) < 1:  # Probablemente grados
+        #     # 1 grado ≈ 111,320 metros en el ecuador
+        #     pixel_area_m2 = pixel_area * (111320 ** 2)
+        # else:
+        #     pixel_area_m2 = pixel_area  # Ya está en metros
+
+        # valid_data = masked_data[masked_data > 0]
+
+        # # Contar pixeles por tipo de cobertura
+        # unique_values, counts = np.unique(valid_data, return_counts=True)
+
+        transformer = Transformer.from_crs("EPSG:4326", "EPSG:9377", always_xy=True)
+
+        # Obtener coordenadas de una celda en grados
+        pixel_width_degrees = abs(window_transform[0])
+        pixel_height_degrees = abs(window_transform[4])
+
+        # Tomar un punto de referencia (centro de los datos)
+        center_x = window_transform[2]  # x del centro
+        center_y = window_transform[5]  # y del centro
+
+        # Crear las 4 esquinas de un pixel en grados
+        corners_geo = [
+            (center_x, center_y),
+            (center_x + pixel_width_degrees, center_y),
+            (center_x + pixel_width_degrees, center_y + pixel_height_degrees),
+            (center_x, center_y + pixel_height_degrees)
+        ]
+
+        # Reproyectar las esquinas a EPSG:9377
+        corners_projected = [transformer.transform(x, y) for x, y in corners_geo]
+
+        pixel_polygon = Polygon(corners_projected)
+        pixel_area_m2 = pixel_polygon.area
+
+        print(f"2. Área del pixel reproyectada: {pixel_area_m2} m²")
+
+        # Resto del cálculo igual
+        valid_data = masked_data[masked_data > 0]
+
+        if len(valid_data) == 0:
+            return {}
+
+        unique_values, counts = np.unique(valid_data, return_counts=True)
+
+        # Calcular áreas
+        results = {}
+        for value, count in zip(unique_values, counts):
+            area_m2 = count * pixel_area_m2
+            area_ha = area_m2 / 10000  # Convertir a hectáreas
+            print(f"6. Procesando valor {value}...")
+            if value in categories.values():
+                category_key = [
+                    class_name
+                    for class_name, val in categories.items()
+                    if val == value
+                ][0]
+                results[category_key] = area_ha
+
+        return results
 
 
 def get_raster_values(

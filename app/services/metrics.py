@@ -28,7 +28,7 @@ def get_areas_by_polygon(
     result = []
 
     for k, v in assets_url.items():
-        raster_values = raster_utils.get_raster_values(v, polygon, categories)
+        raster_values = raster_utils.get_raster_values2(v, polygon, categories)
         response = {metric_group_key(metric_id): k}
         for class_name in categories.keys():
             response[class_name.lower()] = raster_values.get(class_name, 0)
@@ -48,15 +48,15 @@ async def get_or_create_polygon_metric(
     if not polygon_obj:
         raise HTTPException(status_code=404, detail="Polygon not found")
 
-    metric = await PolygonMetric.get_or_none(
-        polygon=polygon_obj, metric=metric_id
-    )
-    if metric:
-        return build_metric_response(metric_id, metric.values)
+    # metric = await PolygonMetric.get_or_none(
+    #     polygon=polygon_obj, metric=metric_id
+    # )
+    # if metric:
+    #     return build_metric_response(metric_id, metric.values)
 
     polygon = geometries.MultiPolygon(**polygon_obj.geometry)
     values = get_areas_by_polygon(metric_id, polygon)
-    await create_polygon_metric(polygon_obj, metric_id, values)
+    # await create_polygon_metric(polygon_obj, metric_id, values)
     return build_metric_response(metric_id, values)
 
 
